@@ -3,48 +3,71 @@ package service
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/abhinandpn/CompressImage/server"
 )
 
-// ProcessAndCompressImage handles image processing via Imaginary API
+// ProcessAndCompressImage handles image processing via Imaginary API (concurrent)
 func ProcessAndCompressImage(filename string, imageData []byte, size int64) (map[string]string, error) {
-	// Generate a readable filename
 	baseName := strings.TrimSuffix(filename, filepath.Ext(filename))
 	baseName = strings.ReplaceAll(baseName, " ", "_")
 
-	// Save original (apply reduction based on size)
-	originalPath, err := server.ProcessImageWithImaginary(imageData, determineOriginalSizeReduction(size), baseName+"_original")
-	if err != nil {
-		return nil, err
+	if cachedPaths, exists := GetCachedResult(baseName); exists {
+		return cachedPaths, nil
 	}
 
-	// Save in different sizes
+	var wg sync.WaitGroup
+	resultChan := make(chan struct {
+		key  string
+		path string
+		err  error
+	}, 4)
+
 	sizes := map[string]int{
+		"original":             determineOriginalSizeReduction(size), // ✅ Fixed: Now defined
 		"compressed_200-300KB": 250,
 		"compressed_10-20KB":   15,
 		"compressed_1-5KB":     3,
 	}
 
-	imagePaths := map[string]string{"original": originalPath}
 	for key, quality := range sizes {
-		path, err := server.ProcessImageWithImaginary(imageData, quality, baseName+"_"+key)
-		if err == nil {
-			imagePaths[key] = path
+		wg.Add(1)
+		go func(k string, q int) {
+			defer wg.Done()
+			path, err := server.ProcessImageWithImaginary(imageData, q, baseName+"_"+k)
+			resultChan <- struct {
+				key  string
+				path string
+				err  error
+			}{key: k, path: path, err: err}
+		}(key, quality)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	imagePaths := make(map[string]string)
+	for res := range resultChan {
+		if res.err == nil {
+			imagePaths[res.key] = res.path
 		}
 	}
 
+	CacheResult(baseName, imagePaths)
 	return imagePaths, nil
 }
 
-// determineOriginalSizeReduction determines the quality based on file size
+// ✅ Added function to determine compression based on file size
 func determineOriginalSizeReduction(size int64) int {
 	switch {
-	case size > 5*1024*1024:
+	case size > 5*1024*1024: // If size > 5MB
 		return 50
-	case size > 2*1024*1024:
+	case size > 2*1024*1024: // If size is between 2MB and 5MB
 		return 30
-	default:
+	default: // If size is < 2MB
 		return 100 // No compression
 	}
 }

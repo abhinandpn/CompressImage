@@ -3,57 +3,42 @@ package server
 import (
 	"bytes"
 	"fmt"
-	"io"
+	"image"
+	"image/jpeg"
 	"log"
-	"mime/multipart"
-	"net/http"
 	"os"
 	"os/exec"
 
-	"github.com/abhinandpn/CompressImage/internal/repository"
+	"github.com/nfnt/resize"
 )
 
 // ProcessImageWithImaginary calls Imaginary API to resize/compress images
-func ProcessImageWithImaginary(imageData []byte, quality int, outputName string) (string, error) {
-	url := fmt.Sprintf("http://localhost:9000/resize?width=1000&height=1000&quality=%d", quality)
-
-	// Create a new HTTP request with multipart form data
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", outputName+".jpg")
-	if err != nil {
-		return "", err
-	}
-	part.Write(imageData)
-	writer.Close()
-
-	// Send request to Imaginary
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	client := HttpClient // Use the optimized HTTP client
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	// Read response (processed image)
-	resizedImage, err := io.ReadAll(resp.Body)
+// ProcessImageWithImaginary compresses and resizes an image while keeping aspect ratio
+func ProcessImageWithImaginary(imageData []byte, quality int, outputName string, width int, height int) (string, error) {
+	img, _, err := image.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		return "", err
 	}
 
-	// Save the resized image to storage
-	filePath, err := repository.SaveImageToStorage(outputName+".jpg", resizedImage)
+	// Resize the image while keeping the aspect ratio
+	resizedImg := resize.Resize(uint(width), uint(height), img, resize.Lanczos3)
+
+	// Create the output file
+	outputPath := fmt.Sprintf("storage/%s.jpg", outputName)
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return "", err
+	}
+	defer outFile.Close()
+
+	// Encode the resized image
+	options := &jpeg.Options{Quality: quality}
+	err = jpeg.Encode(outFile, resizedImg, options)
 	if err != nil {
 		return "", err
 	}
 
-	return filePath, nil
+	return outputPath, nil
 }
 
 // StartImaginaryServer starts the Imaginary server as a background process

@@ -1,47 +1,107 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"image"
+	_ "image/jpeg" // Import for JPEG decoding
+	_ "image/png"  // Import for PNG decoding
 	"io"
 	"net/http"
 
 	"github.com/abhinandpn/CompressImage/internal/service"
 )
 
-// UploadImageHandler handles image uploads
+// UploadImageHandler handles multiple image uploads
 func UploadImageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB limit per file
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
 		return
 	}
 
-	file, header, err := r.FormFile("image")
-	if err != nil {
-		http.Error(w, "Invalid file", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	if header.Size > 10*1024*1024 {
-		http.Error(w, "File size exceeds 10MB", http.StatusBadRequest)
+	files := r.MultipartForm.File["image"]
+	if len(files) == 0 {
+		http.Error(w, "No files uploaded", http.StatusBadRequest)
 		return
 	}
 
-	fileBytes, err := io.ReadAll(file)
-	if err != nil {
-		http.Error(w, "Failed to read file", http.StatusInternalServerError)
-		return
+	var imagesData []map[string]interface{}
+
+	for _, fileHeader := range files {
+		file, err := fileHeader.Open()
+		if err != nil {
+			http.Error(w, "Failed to open file", http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+
+		if fileHeader.Size > 10*1024*1024 {
+			http.Error(w, "File size exceeds 10MB", http.StatusBadRequest)
+			return
+		}
+
+		// Read file into memory
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Failed to read file", http.StatusInternalServerError)
+			return
+		}
+
+		// Decode image to get dimensions
+		imgConfig, _, err := image.DecodeConfig(bytes.NewReader(fileBytes))
+		if err != nil {
+			http.Error(w, "Failed to decode image", http.StatusInternalServerError)
+			return
+		}
+		originalWidth := imgConfig.Width
+		originalHeight := imgConfig.Height
+
+		// Process and compress image with aspect ratio preservation
+		imagePaths, err := service.ProcessAndCompressImage(fileHeader.Filename, fileBytes, fileHeader.Size, originalWidth, originalHeight)
+		if err != nil {
+			http.Error(w, "Failed to process image", http.StatusInternalServerError)
+			return
+		}
+
+		// Calculate aspect ratio without max=10 constraint
+		aspectRatio := calculateAspectRatio(originalWidth, originalHeight)
+
+		// Append image data
+		imagesData = append(imagesData, map[string]interface{}{
+			"filename":        fileHeader.Filename,
+			"aspect_ratio":    aspectRatio,
+			"original_width":  originalWidth,
+			"original_height": originalHeight,
+			"paths":           imagePaths,
+		})
 	}
 
-	imagePaths, err := service.ProcessAndCompressImage(header.Filename, fileBytes, header.Size)
-	if err != nil {
-		http.Error(w, "Failed to process image", http.StatusInternalServerError)
-		return
-	}
-
+	// Return response
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "Image uploaded successfully",
-		"paths":   imagePaths,
+		"message": "Images uploaded successfully",
+		"images":  imagesData,
 	})
+}
+
+// Function to calculate the greatest common divisor (GCD)
+func gcd(a, b int) int {
+	if b == 0 {
+		return a
+	}
+	return gcd(b, a%b)
+}
+
+// Function to calculate and simplify aspect ratio (without max=10 limitation)
+func calculateAspectRatio(width, height int) string {
+	if width == 0 || height == 0 {
+		return "Invalid"
+	}
+
+	g := gcd(width, height) // Find the GCD
+	simplifiedWidth := width / g
+	simplifiedHeight := height / g
+
+	return fmt.Sprintf("%d:%d", simplifiedWidth, simplifiedHeight)
 }

@@ -8,6 +8,7 @@ import (
 	_ "image/jpeg" // Import for JPEG decoding
 	_ "image/png"  // Import for PNG decoding
 	"io"
+	"io/ioutil"
 	"net/http"
 
 	"github.com/abhinandpn/CompressImage/internal/service"
@@ -104,4 +105,63 @@ func calculateAspectRatio(width, height int) string {
 	simplifiedHeight := height / g
 
 	return fmt.Sprintf("%d:%d", simplifiedWidth, simplifiedHeight)
+}
+
+// S3ImageHandler handles image upload, processing, and saving to S3
+func S3ImageHandler(w http.ResponseWriter, r *http.Request) {
+	// Limit the file size to prevent too large uploads
+	const maxFileSize = 10 * 1024 * 1024 // 10 MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxFileSize)
+
+	// Parse the form and get the file
+	err := r.ParseMultipartForm(maxFileSize)
+	if err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	file, fileHeader, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "Failed to retrieve file from form", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Read the file into a byte slice
+	fileBytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	// Get the original image dimensions (width and height)
+	originalImage, _, err := image.Decode(bytes.NewReader(fileBytes))
+	if err != nil {
+		http.Error(w, "Failed to decode image", http.StatusInternalServerError)
+		return
+	}
+	originalWidth := originalImage.Bounds().Dx()
+	originalHeight := originalImage.Bounds().Dy()
+
+	// Call S3ProcessAndCompressImage to process and upload the image to S3
+	imagePaths, err := service.S3ProcessAndCompressImage(fileHeader.Filename, fileBytes, fileHeader.Size, originalWidth, originalHeight)
+	if err != nil {
+		http.Error(w, "Failed to process and upload image to S3", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if any images were uploaded successfully
+	if len(imagePaths) == 0 {
+		http.Error(w, "No images were uploaded", http.StatusInternalServerError)
+		return
+	}
+
+	// Return a success response with the S3 URLs of the uploaded images
+	response := map[string]interface{}{
+		"message":   "Image processed and uploaded successfully",
+		"imageUrls": imagePaths,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }

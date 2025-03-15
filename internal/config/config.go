@@ -32,3 +32,27 @@ func GetServerPort() string {
 	}
 	return port
 }
+
+// GetAWSRegion returns the AWS region
+func GetAWSRegion() string {
+	region := os.Getenv("AWS_BUCKET_REGION")
+	if region == "" {
+		region = "ap-south-1" // Default to "ap-south-1" if not set
+	}
+	return region
+}
+
+// GetAWSAccessKey returns the AWS access key
+func GetAWSAccessKey() string {
+	return os.Getenv("AWS_ACCESS_KEY")
+}
+
+// GetAWSSecretKey returns the AWS secret key
+func GetAWSSecretKey() string {
+	return os.Getenv("AWS_SECRET_KEY")
+}
+
+// GetAWSBucketName returns the AWS S3 bucket name
+func GetAWSBucketName() string {
+	return os.Getenv("AWS_BUCKET_NAME")
+}

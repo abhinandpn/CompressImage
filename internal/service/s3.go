@@ -1,8 +1,7 @@
-package repository
+package service
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"mime/multipart"
 	"os"
@@ -13,25 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-// ReadFile reads file data into memory
-func ReadFile(file io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-
-// SaveImageToStorage saves the image to the storage folder
-func SaveImageToStorage(filename string, data []byte) (string, error) {
-	path := fmt.Sprintf("storage/%s", filename)
-	err := os.WriteFile(path, data, 0644)
-	if err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
+// S3upload uploads a file to the AWS S3 bucket
 func S3upload(file multipart.File, fileName string, fileType string) (string, error) {
 	// Initialize AWS session
 	sess, err := session.NewSession(&aws.Config{

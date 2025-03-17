@@ -16,12 +16,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-// Standard dimensions (based on 200-300KB image)
-const (
-	StandardWidth  = 629 // Update this if needed
-	StandardHeight = 405 // Update this if needed
-)
-
 // ProcessAndCompressImage handles image processing via Imaginary API (concurrent)
 func ProcessAndCompressImage(filename string, imageData []byte, size int64, originalWidth, originalHeight int) (map[string]string, error) {
 	baseName := strings.TrimSuffix(filename, filepath.Ext(filename))
@@ -38,21 +32,31 @@ func ProcessAndCompressImage(filename string, imageData []byte, size int64, orig
 		err  error
 	}, 4)
 
-	// Define compression quality levels
+	// Define compression quality levels and target sizes
 	sizes := map[string]int{
-		"original":             determineOriginalSizeReduction(size),
-		"compressed_200-300KB": 250,
-		"compressed_10-20KB":   15,
-		"compressed_1-5KB":     3,
+		"original":  determineOriginalSizeReduction(size), // Original size with potential reduction
+		"250-300KB": 80,                                   // Adjust quality for 250-300KB
+		"150-200KB": 60,                                   // Adjust quality for 150-200KB
+		"10-50KB":   20,                                   // Adjust quality for 10-50KB
 	}
+
+	aspectRatio := float64(originalWidth) / float64(originalHeight)
 
 	for key, quality := range sizes {
 		wg.Add(1)
 		go func(k string, q int) {
 			defer wg.Done()
 
-			// Apply fixed dimensions from the 200-300KB image
-			newWidth, newHeight := StandardWidth, StandardHeight
+			// Calculate dimensions based on aspect ratio
+			var newWidth, newHeight int
+			if k == "original" {
+				newWidth, newHeight = originalWidth, originalHeight // Keep original dimensions
+			} else {
+				// Scale dimensions to maintain aspect ratio (start with a reasonable base width)
+				baseWidth := 1200 // Starting point, adjust if needed
+				newWidth = baseWidth
+				newHeight = int(float64(newWidth) / aspectRatio)
+			}
 
 			// Process the image with consistent dimensions
 			path, err := server.ProcessImageWithImaginary(imageData, q, baseName+"_"+k, newWidth, newHeight)
@@ -80,50 +84,6 @@ func ProcessAndCompressImage(filename string, imageData []byte, size int64, orig
 	return imagePaths, nil
 }
 
-// Determines the original image compression based on file size
-func determineOriginalSizeReduction(size int64) int {
-	switch {
-	case size > 5*1024*1024: // If size > 5MB
-		return 50
-	case size > 2*1024*1024: // If size is between 2MB and 5MB
-		return 30
-	default: // If size is < 2MB
-		return 100 // No compression
-	}
-}
-
-// S3upload uploads a file to the AWS S3 bucket
-func S3Imageupload(file multipart.File, fileName string, fileType string) (string, error) {
-	// Initialize AWS session
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(os.Getenv("AWS_BUCKET_REGION")),
-		Credentials: credentials.NewStaticCredentials(os.Getenv("AWS_ACCESS_KEY"), os.Getenv("AWS_SECRET_KEY"), ""),
-	})
-	if err != nil {
-		log.Println("Failed to initialize AWS session:", err)
-		return "", fmt.Errorf("failed to initialize AWS session: %v", err)
-	}
-
-	svc := s3.New(sess)
-	bucket := os.Getenv("AWS_BUCKET_NAME")
-	key := "imaginary/" + fileName
-
-	// Upload the file directly using PutObject
-	_, err = svc.PutObject(&s3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(key),
-		Body:        file,                 // Use the multipart.File directly
-		ContentType: aws.String(fileType), // Ensure correct MIME type (e.g., image/jpeg)
-	})
-	if err != nil {
-		log.Printf("Failed to upload file: %v", err)
-		return "", fmt.Errorf("failed to upload file: %v", err)
-	}
-
-	// Return the public URL
-	return "https://" + bucket + ".s3.amazonaws.com/" + key, nil
-}
-
 // S3ProcessAndCompressImage handles image processing and uploads to S3
 func S3ProcessAndCompressImage(filename string, imageData []byte, size int64, originalWidth, originalHeight int) (map[string]string, error) {
 	baseName := strings.TrimSuffix(filename, filepath.Ext(filename))
@@ -141,13 +101,16 @@ func S3ProcessAndCompressImage(filename string, imageData []byte, size int64, or
 		err  error
 	}, 4)
 
-	// Define compression quality levels
+	// Define compression quality levels and target sizes
 	sizes := map[string]int{
-		"original":             determineOriginalSizeReduction(size),
-		"compressed_200-300KB": 250,
-		"compressed_10-20KB":   15,
-		"compressed_1-5KB":     3,
+		"original":  determineOriginalSizeReduction(size), // Original size with potential reduction
+		"250-300KB": 80,                                   // Adjust quality for 250-300KB
+		"150-200KB": 60,                                   // Adjust quality for 150-200KB
+		"10-50KB":   20,                                   // Adjust quality for 10-50KB
 	}
+
+	// Calculate aspect ratio from original dimensions
+	aspectRatio := float64(originalWidth) / float64(originalHeight)
 
 	// Process the image in different sizes concurrently
 	for key, quality := range sizes {
@@ -155,8 +118,16 @@ func S3ProcessAndCompressImage(filename string, imageData []byte, size int64, or
 		go func(k string, q int) {
 			defer wg.Done()
 
-			// Apply fixed dimensions from the 200-300KB image
-			newWidth, newHeight := StandardWidth, StandardHeight
+			// Calculate dimensions based on aspect ratio
+			var newWidth, newHeight int
+			if k == "original" {
+				newWidth, newHeight = originalWidth, originalHeight // Keep original dimensions
+			} else {
+				// Scale dimensions to maintain aspect ratio (start with a reasonable base width)
+				baseWidth := 1200 // Starting point, adjust if needed
+				newWidth = baseWidth
+				newHeight = int(float64(newWidth) / aspectRatio)
+			}
 
 			// Process the image with consistent dimensions
 			path, err := server.ProcessImageWithImaginary(imageData, q, baseName+"_"+k, newWidth, newHeight)
@@ -182,7 +153,7 @@ func S3ProcessAndCompressImage(filename string, imageData []byte, size int64, or
 			defer file.Close()
 
 			// Upload the image to S3
-			s3URL, uploadErr := S3upload(file, baseName+"_"+k+".jpg", "image/jpeg")
+			s3URL, uploadErr := S3Imageupload(file, baseName+"_"+k+".jpg", "image/jpeg")
 			if uploadErr == nil {
 				resultChan <- struct {
 					key  string
@@ -216,4 +187,48 @@ func S3ProcessAndCompressImage(filename string, imageData []byte, size int64, or
 	// Cache the results
 	CacheResult(baseName, imagePaths)
 	return imagePaths, nil
+}
+
+// Determines the original image compression based on file size
+func determineOriginalSizeReduction(size int64) int {
+	switch {
+	case size > 5*1024*1024: // If size > 5MB
+		return 50
+	case size > 2*1024*1024: // If size is between 2MB and 5MB
+		return 70
+	default: // If size is < 2MB
+		return 100 // No compression
+	}
+}
+
+// S3Imageupload uploads a file to the AWS S3 bucket
+func S3Imageupload(file multipart.File, fileName string, fileType string) (string, error) {
+	// Initialize AWS session
+	sess, err := session.NewSession(&aws.Config{
+		Region:      aws.String(os.Getenv("AWS_BUCKET_REGION")),
+		Credentials: credentials.NewStaticCredentials(os.Getenv("AWS_ACCESS_KEY"), os.Getenv("AWS_SECRET_KEY"), ""),
+	})
+	if err != nil {
+		log.Println("Failed to initialize AWS session:", err)
+		return "", fmt.Errorf("failed to initialize AWS session: %v", err)
+	}
+
+	svc := s3.New(sess)
+	bucket := os.Getenv("AWS_BUCKET_NAME")
+	key := "imaginary/" + fileName
+
+	// Upload the file directly using PutObject
+	_, err = svc.PutObject(&s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(key),
+		Body:        file,                 // Use the multipart.File directly
+		ContentType: aws.String(fileType), // Ensure correct MIME type (e.g., image/jpeg)
+	})
+	if err != nil {
+		log.Printf("Failed to upload file: %v", err)
+		return "", fmt.Errorf("failed to upload file: %v", err)
+	}
+
+	// Return the public URL
+	return "https://" + bucket + ".s3.amazonaws.com/" + key, nil
 }
